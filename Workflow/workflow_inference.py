@@ -6,6 +6,7 @@ import argparse
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModel
 from huggingface_mae import MAEModel
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, jaccard_score
 
 # ---------------------------
 # Helper functions
@@ -58,8 +59,8 @@ def get_chemberta_embedding(smiles, tokenizer, model, device):
 def extract_sample_key(filename):
     """
     Extract the sample key from the filename.
-    This returns the filename without the ".npz" extension.
-    For example, if the file is "plateA-12345.npz", it returns "plateA-12345".
+    Returns the filename without the ".npz" extension.
+    For example, "plateA-12345.npz" becomes "plateA-12345".
     """
     base = os.path.basename(filename)
     if base.endswith(".npz"):
@@ -103,7 +104,7 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Load CSV with sample keys, SMILES strings, and labels.
-    # CSV is expected to have columns: "SAMPLE_KEY", "CPD_SMILES", and optionally "label".
+    # CSV is expected to have columns: "SAMPLE_KEY", "CPD_SMILES", and "label".
     df = pd.read_csv(args.csv_file)
     
     # ---------------------------
@@ -196,6 +197,44 @@ def main(args):
         results_df = pd.DataFrame(results)
         results_df.to_csv(args.output_csv, index=False)
         print(f"Predictions saved to {args.output_csv}")
+    
+    # ---------------------------
+    # Calculate Evaluation Metrics
+    # ---------------------------
+    
+    # Only compute metrics if ground truth labels are available.
+    valid_results = [r for r in results if r["true_label"] is not None]
+    if valid_results:
+        # Define a mapping from label strings to numeric values.
+        label_map = {"inactive": 0, "active": 1}
+        y_true = []
+        y_pred = []
+        for r in valid_results:
+            # Convert to lower-case strings to avoid case mismatches.
+            true_val = str(r["true_label"]).strip().lower()
+            pred_val = str(r["predicted_label"]).strip().lower()
+            if true_val in label_map and pred_val in label_map:
+                y_true.append(label_map[true_val])
+                y_pred.append(label_map[pred_val])
+        
+        if len(y_true) > 0:
+            acc = accuracy_score(y_true, y_pred)
+            prec = precision_score(y_true, y_pred, pos_label=1)
+            rec = recall_score(y_true, y_pred, pos_label=1)
+            f1 = f1_score(y_true, y_pred, pos_label=1)
+            # IoU is computed as the Jaccard index for the positive class.
+            iou = jaccard_score(y_true, y_pred, pos_label=1)
+            
+            print("\nEvaluation Metrics:")
+            print(f"Accuracy:  {acc:.4f}")
+            print(f"Precision: {prec:.4f}")
+            print(f"Recall:    {rec:.4f}")
+            print(f"F1 Score:  {f1:.4f}")
+            print(f"IoU:       {iou:.4f}")
+        else:
+            print("No valid labels found for computing evaluation metrics.")
+    else:
+        print("No ground truth labels available; skipping metric calculations.")
 
 # ---------------------------
 # Command-line interface
@@ -208,7 +247,7 @@ if __name__ == "__main__":
     parser.add_argument("--npz_folder", type=str, required=True,
                         help="Path to the folder containing NPZ image files for one plate. The folder name should match the plate prefix in the filenames.")
     parser.add_argument("--csv_file", type=str, required=True,
-                        help="Path to the FINAL_LABEL_DF.csv file with columns 'SAMPLE_KEY', 'CPD_SMILES', and optionally 'label'.")
+                        help="Path to the FINAL_LABEL_DF.csv file with columns 'SAMPLE_KEY', 'CPD_SMILES', and 'label'.")
     parser.add_argument("--output_csv", type=str, default="predictions.csv",
                         help="File path to save the prediction results.")
     parser.add_argument("--proj_dim", type=int, default=256,
@@ -218,7 +257,3 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     main(args)
-
-
-# Example usage 
-# python workflow.py --npz_folder /home/s2639050/MLP/final_image_path --csv_file /home/s2639050/MLP/FINAL_LABEL_DF.csv --output_csv /home/s2639050/MLP/predictions.csv
