@@ -56,13 +56,13 @@ def get_chemberta_embedding(smiles, tokenizer, model, device):
     embedding = hidden_states.mean(dim=1)       # shape: (1, D_smiles)
     return embedding
 
-def extract_sample_key(filename):
+def extract_sample_key(file_path):
     """
     Extract the sample key from the filename.
     Returns the filename without the ".npz" extension.
-    For example, "plateA-12345.npz" becomes "plateA-12345".
+    For example, if the file is "plateA-12345.npz", returns "plateA-12345".
     """
-    base = os.path.basename(filename)
+    base = os.path.basename(file_path)
     if base.endswith(".npz"):
         return base[:-4]
     return base
@@ -74,6 +74,17 @@ def label_to_int(label):
     """
     label = str(label).strip().lower()
     return 1 if label == "active" else 0
+
+def get_npz_file_paths(parent_folder):
+    """
+    Recursively search through the parent folder and collect all NPZ file paths.
+    """
+    npz_files = []
+    for root, dirs, files in os.walk(parent_folder):
+        for file in files:
+            if file.endswith(".npz"):
+                npz_files.append(os.path.join(root, file))
+    return npz_files
 
 # ---------------------------
 # Define Projection and Classifier
@@ -113,21 +124,18 @@ def train_model(args, device, openphenom_model, chemberta_model, chemberta_token
     optimizer = torch.optim.Adam(net.parameters(), lr=args.learning_rate)
     criterion = nn.CrossEntropyLoss()
     
-    # Build a list of npz file paths with valid CSV labels.
-    file_list = []
-    for file in os.listdir(args.npz_folder):
-        if file.endswith(".npz"):
-            sample_key = extract_sample_key(file)
-            if not df[df["SAMPLE_KEY"] == sample_key].empty:
-                file_list.append(file)
+    # Get all NPZ file paths from the training parent folder.
+    npz_files = get_npz_file_paths(args.train_npz_parent)
     
-    print(f"Found {len(file_list)} samples for training.")
+    # Filter files to only those with a matching CSV entry.
+    train_files = [f for f in npz_files if not df[df["SAMPLE_KEY"] == extract_sample_key(f)].empty]
+    print(f"Found {len(train_files)} samples for training across subfolders.")
     
     for epoch in range(args.epochs):
         epoch_losses = []
-        for file in file_list:
-            npz_path = os.path.join(args.npz_folder, file)
-            sample_key = extract_sample_key(file)
+        # Optionally, you can shuffle the training list here.
+        for npz_path in train_files:
+            sample_key = extract_sample_key(npz_path)
             
             # Retrieve CSV row for this sample key.
             row = df[df["SAMPLE_KEY"] == sample_key]
@@ -153,7 +161,6 @@ def train_model(args, device, openphenom_model, chemberta_model, chemberta_token
         avg_loss = np.mean(epoch_losses) if epoch_losses else float('nan')
         print(f"Epoch [{epoch+1}/{args.epochs}], Average Loss: {avg_loss:.4f}")
     
-    # Optionally, save the trained network
     if args.save_model:
         torch.save(net.state_dict(), args.save_model)
         print(f"Trained model saved to {args.save_model}")
@@ -162,49 +169,48 @@ def train_model(args, device, openphenom_model, chemberta_model, chemberta_token
 # Evaluation Function
 # ---------------------------
 
-def evaluate_model(args, device, openphenom_model, chemberta_model, chemberta_tokenizer, net, df):
+def evaluate_model(args, device, openphenom_model, chemberta_model, chemberta_tokenizer, net, df, npz_parent):
     net.eval()  # Set network to evaluation mode
     results = []
     
-    # Process each NPZ file in the folder
-    for file in os.listdir(args.npz_folder):
-        if file.endswith(".npz"):
-            npz_path = os.path.join(args.npz_folder, file)
-            sample_key = extract_sample_key(file)
-            print(f"Processing sample: {sample_key}")
-            
-            # Retrieve CSV row for this sample.
-            row = df[df["SAMPLE_KEY"] == sample_key]
-            if row.empty:
-                print(f"No matching CSV entry found for sample key: {sample_key}. Skipping.")
-                continue
-            
-            smiles = row.iloc[0]["CPD_SMILES"]
-            true_label = row.iloc[0]["label"] if "label" in row.columns else None
-            
-            # Generate embeddings
-            img_embedding = get_openphenom_embedding(npz_path, openphenom_model, device)
-            smiles_embedding = get_chemberta_embedding(smiles, chemberta_tokenizer, chemberta_model, device)
-            
-            # Forward pass through the network
-            logits = net(img_embedding, smiles_embedding)
-            prediction = torch.argmax(logits, dim=1).item()
-            pred_label = "active" if prediction == 1 else "inactive"
-            print(f"Sample {sample_key}: Predicted {pred_label}")
-            
-            results.append({
-                "SAMPLE_KEY": sample_key,
-                "predicted_label": pred_label,
-                "true_label": true_label
-            })
+    # Get all NPZ file paths from the evaluation folder (or parent)
+    npz_files = get_npz_file_paths(npz_parent)
     
-    # Save predictions if output CSV path is provided.
+    for npz_path in npz_files:
+        sample_key = extract_sample_key(npz_path)
+        print(f"Processing sample: {sample_key}")
+        
+        # Retrieve CSV row for this sample.
+        row = df[df["SAMPLE_KEY"] == sample_key]
+        if row.empty:
+            print(f"No matching CSV entry found for sample key: {sample_key}. Skipping.")
+            continue
+        
+        smiles = row.iloc[0]["CPD_SMILES"]
+        true_label = row.iloc[0]["label"] if "label" in row.columns else None
+        
+        # Generate embeddings
+        img_embedding = get_openphenom_embedding(npz_path, openphenom_model, device)
+        smiles_embedding = get_chemberta_embedding(smiles, chemberta_tokenizer, chemberta_model, device)
+        
+        # Forward pass through the network
+        logits = net(img_embedding, smiles_embedding)
+        prediction = torch.argmax(logits, dim=1).item()
+        pred_label = "active" if prediction == 1 else "inactive"
+        print(f"Sample {sample_key}: Predicted {pred_label}")
+        
+        results.append({
+            "SAMPLE_KEY": sample_key,
+            "predicted_label": pred_label,
+            "true_label": true_label
+        })
+    
     if args.output_csv:
         results_df = pd.DataFrame(results)
         results_df.to_csv(args.output_csv, index=False)
         print(f"Predictions saved to {args.output_csv}")
     
-    # Calculate Evaluation Metrics if true labels are available.
+    # Compute evaluation metrics if ground truth labels exist.
     valid_results = [r for r in results if r["true_label"] is not None]
     if valid_results:
         label_map = {"inactive": 0, "active": 1}
@@ -217,7 +223,7 @@ def evaluate_model(args, device, openphenom_model, chemberta_model, chemberta_to
                 y_true.append(label_map[true_val])
                 y_pred.append(label_map[pred_val])
         
-        if len(y_true) > 0:
+        if y_true:
             acc = accuracy_score(y_true, y_pred)
             prec = precision_score(y_true, y_pred, pos_label=1)
             rec = recall_score(y_true, y_pred, pos_label=1)
@@ -266,10 +272,12 @@ def main(args):
     # Determine embedding dimensions using dummy inputs
     # ---------------------------
     
+    # For dummy image embedding, use one NPZ file from the evaluation folder (or single folder)
+    dummy_folder = args.eval_npz_parent if args.mode == "eval" and args.eval_npz_parent else args.npz_folder
     dummy_npz = None
-    for file in os.listdir(args.npz_folder):
+    for file in os.listdir(dummy_folder):
         if file.endswith(".npz"):
-            dummy_npz = os.path.join(args.npz_folder, file)
+            dummy_npz = os.path.join(dummy_folder, file)
             break
     if dummy_npz is None:
         print("No NPZ files found in the provided folder.")
@@ -302,11 +310,16 @@ def main(args):
     # ---------------------------
     
     if args.mode == "train":
+        if not args.train_npz_parent:
+            print("For training mode, please provide --train_npz_parent (parent folder containing training plates).")
+            return
         print("Starting training...")
         train_model(args, device, openphenom_model, chemberta_model, chemberta_tokenizer, net, df)
     else:
+        # For evaluation, use eval_npz_parent if provided; otherwise, fall back to npz_folder.
+        eval_parent = args.eval_npz_parent if args.eval_npz_parent else args.npz_folder
         print("Starting evaluation...")
-        evaluate_model(args, device, openphenom_model, chemberta_model, chemberta_tokenizer, net, df)
+        evaluate_model(args, device, openphenom_model, chemberta_model, chemberta_tokenizer, net, df, eval_parent)
 
 # ---------------------------
 # Command-line interface
@@ -316,8 +329,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Workflow for predicting small molecule activity from cell microscopy images and SMILES embeddings."
     )
-    parser.add_argument("--npz_folder", type=str, required=True,
-                        help="Path to the folder containing NPZ image files for one plate. The folder name should match the plate prefix in the filenames.")
+    # For evaluation on a single folder, you can still provide --npz_folder.
+    parser.add_argument("--npz_folder", type=str, default="",
+                        help="Path to a folder containing NPZ files (used for evaluation if --eval_npz_parent is not provided).")
+    parser.add_argument("--train_npz_parent", type=str, default="",
+                        help="Path to the parent folder containing multiple subfolders (plates) with NPZ files for training.")
+    parser.add_argument("--eval_npz_parent", type=str, default="",
+                        help="Path to the parent folder containing multiple subfolders (plates) with NPZ files for evaluation.")
     parser.add_argument("--csv_file", type=str, required=True,
                         help="Path to the FINAL_LABEL_DF.csv file with columns 'SAMPLE_KEY', 'CPD_SMILES', and 'label'.")
     parser.add_argument("--output_csv", type=str, default="predictions.csv",
