@@ -1,0 +1,35 @@
+model_configs:
+  image_model_name_or_path: "recursionpharma/OpenPhenom"
+  drug_model_name_or_path: "DeepChem/ChemBERTa-77M-MTR"
+  checkpoint_path: null
+  model_hyperparameters:
+    learning_rate: 0.0001
+    image_max_size: 256
+    drug_max_seq_len: 512
+    warmup_steps_ratio: 0.06
+    gradient_accumulation_steps: 32
+    projected_size: 256
+    projected_dropout: 0.5
+    relu_before_cosine: false
+    init_noise_sigma: 1
+    sigma_lr: 0.01
+  image_fine_tuning_type: "projection"
+  drug_fine_tuning_type: "projection"
+  image_peft_hyperparameters: null
+  drug_peft_hyperparameters: null
+  loss_function: "cosine_mse"
+
+dataset_configs:
+  dataset_name: "cell_compound"
+  harmonize_activities_mode: null
+  split_method: "random"
+  train_ratio: 0.7
+
+training_configs:
+  random_seed: 1234
+  device: 0
+  epochs: 20
+  batch_size: 8
+  patience: 5
+  min_delta: 0.005
+  outputs_dir: "outputs"
